@@ -158,20 +158,21 @@ def get_release_image():
     return release_image
 
 
-def get_rhcos_openstack_url():
-    for line in os.popen('openshift-install version').readlines():
-        if 'built from commit' in line:
-            commit_id = line.replace('built from commit ', '').strip()
-            break
-    r = urlopen(f"https://raw.githubusercontent.com/openshift/installer/{commit_id}/data/data/rhcos.json")
-    r = str(r.read(), 'utf-8').strip()
-    data = json.loads(r)
-    return f"{data['baseURI']}{data['images']['openstack']['path']}"
-
-
-def get_downstream_installer(devpreview=False, macosx=False, tag=None, debug=False, pull_secret='openshift_pull.json'):
-    arch = 'arm64' if os.uname().machine == 'aarch64' else None
-    repo = 'ocp-dev-preview' if devpreview else 'ocp'
+def get_downstream_installer(version='stable', macosx=False, tag=None, debug=False,
+                             pull_secret='openshift_pull.json', baremetal=False):
+    if baremetal:
+        offline = offline_image(version=version, tag=tag, pull_secret=pull_secret)
+        binary = 'openshift-baremetal-install' if get_installer_minor(tag) < 16 else 'openshift-install'
+        cmd = f"oc adm release extract --registry-config {pull_secret} --command={binary} --to . {offline}"
+        if get_installer_minor(tag) >= 16:
+            cmd += '; mv openshift-install openshift-baremetal-install'
+        cmd += "; chmod 700 openshift-baremetal-install"
+        if debug:
+            pprint(cmd)
+        return call(cmd, shell=True)
+    arch_map = {'aarch64': 'arm64', 's390x': 's390x'}
+    arch = arch_map.get(os.uname().machine)
+    repo = 'ocp-dev-preview' if version == 'dev-preview' else 'ocp'
     if tag is None:
         repo += '/latest'
     elif str(tag).count('.') == 1:

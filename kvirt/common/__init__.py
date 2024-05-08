@@ -1805,13 +1805,14 @@ def get_oc(version='latest', macosx=False):
     SYSTEM = 'mac' if os.path.exists('/Users') else 'linux'
     arch = 'arm64' if os.uname().machine == 'aarch64' else 'x86_64'
     pprint("Downloading oc in current directory")
-    occmd = "curl -s "
-    if arch == 'arm64':
-        occmd += f"https://mirror.openshift.com/pub/openshift-v4/{arch}/clients/ocp-dev-preview/"
-        occmd += f"{version}/openshift-client-{SYSTEM}.tar.gz"
-    else:
-        occmd += "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/%s/openshift-client-%s.tar.gz" % (version,
-                                                                                                              SYSTEM)
+    occmd = "curl -Ls "
+    el8 = os.path.exists('/etc/redhat-release') and 'release 8' in open('/etc/redhat-release').read()
+    if el8:
+        warning("Downloading 4.15 oc as you're using an el8 box")
+        tag = '4.15.0'
+    if str(tag).count('.') == 1:
+        tag = f'latest-{tag}'
+    occmd += f"https://mirror.openshift.com/pub/openshift-v4/{arch}/clients/ocp/{tag}/openshift-client-{SYSTEM}.tar.gz"
     occmd += "| tar zxf - oc"
     occmd += "; chmod 700 oc"
     call(occmd, shell=True)
