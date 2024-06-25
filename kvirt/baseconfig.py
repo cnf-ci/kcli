@@ -1832,25 +1832,18 @@ class Kbaseconfig:
         return {'result': 'success'}
 
     def deploy_ksushy_service(self, port=9000, ssl=False, ipv6=False, user=None, password=None, bootonce=False):
-        root_user = True
-        # Check if user is root
-        if os.getuid() != 0:
-            root_user = False
-        if root_user:
+        if ssl:
+            warning("ssl support requires installing manually pyopenssl and cherrypy")
+        root = os.getuid() == 0
+        if root:
             service_file = "/usr/lib/systemd/system/ksushy.service"
         else:
             service_file = f"{os.environ.get('HOME')}/.config/systemd/user/ksushy.service"
-        # Check if directory exists
         if not os.path.exists(os.path.dirname(service_file)):
             os.makedirs(os.path.dirname(service_file))
         update = os.path.exists(service_file)
         home = os.environ.get('HOME', '/root')
-        if ssl:
-            warning("ssl support requires installing manually pyopenssl and cherrypy")
-        if root_user:
-            executable = 'ksushy'
-        else:
-            executable = which('ksushy')
+        executable = which('ksushy')
         port = f"Environment=KSUSHY_PORT={port}\n" if port != 9000 else ''
         ssl = "Environment=KSUSHY_SSL=true\n" if ssl else ''
         ipv6 = "Environment=KSUSHY_IPV6=true\n" if ipv6 else ''
@@ -1861,8 +1854,9 @@ class Kbaseconfig:
                                          password=password, bootonce=bootonce, executable=executable)
         with open(service_file, "w") as f:
             f.write(sushydata)
-        add_user = " --user" if not root_user else ""
-        cmd = f"systemctl{add_user} restart ksushy" if update else f"systemctl{add_user} enable --now ksushy"
+        cmd = "systemctl restart ksushy" if update else "systemctl enable --now ksushy"
+        user_space = "--user" if not root else ""
+        cmd = f"systemctl {user_space} restart ksushy" if update else f"systemctl {user_space} enable --now ksushy"
         call(cmd, shell=True)
 
     def deploy_web_service(self, ssl=False, ipv6=False):
