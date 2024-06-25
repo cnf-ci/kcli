@@ -1831,21 +1831,23 @@ class Kbaseconfig:
                 call(cmcmd, shell=True)
         return {'result': 'success'}
 
-    def deploy_ksushy_service(self, ssl=False, ipv6=False, user=None, password=None):
-        if os.path.exists("/usr/lib/systemd/system/ksushy.service"):
-            call("systemctl restart ksushy", shell=True)
-            return
+    def deploy_ksushy_service(self, port=9000, ssl=False, ipv6=False, user=None, password=None, bootonce=False):
+        update = os.path.exists("/usr/lib/systemd/system/ksushy.service")
         home = os.environ.get('HOME', '/root')
         if ssl:
             warning("ssl support requires installing manually pyopenssl and cherrypy")
-        ssl = "Environment=KSUSHY_SSL=true" if ssl else ''
-        ipv6 = "Environment=KSUSHY_IPV6=true" if ipv6 else ''
-        user = f"Environment=KSUSHY_USER={user}" if user is not None else ''
-        password = f"Environment=KSUSHY_PASSWORD={password}" if password is not None else ''
-        sushydata = KSUSHYSERVICE.format(home=home, ipv6=ipv6, ssl=ssl, user=user, password=password)
+        port = f"Environment=KSUSHY_PORT={port}\n" if port != 9000 else ''
+        ssl = "Environment=KSUSHY_SSL=true\n" if ssl else ''
+        ipv6 = "Environment=KSUSHY_IPV6=true\n" if ipv6 else ''
+        user = f"Environment=KSUSHY_USER={user}\n" if user is not None else ''
+        password = f"Environment=KSUSHY_PASSWORD={password}\n" if password is not None else ''
+        bootonce = "Environment=KSUSHY_BOOTONCE=true\n" if bootonce else ''
+        sushydata = KSUSHYSERVICE.format(home=home, port=port, ipv6=ipv6, ssl=ssl, user=user,
+                                         password=password, bootonce=bootonce)
         with open("/usr/lib/systemd/system/ksushy.service", "w") as f:
             f.write(sushydata)
-        call("systemctl enable --now ksushy", shell=True)
+        cmd = "systemctl restart ksushy" if update else "systemctl enable --now ksushy"
+        call(cmd, shell=True)
 
     def deploy_web_service(self, ssl=False, ipv6=False):
         if os.path.exists("/usr/lib/systemd/system/kweb.service"):

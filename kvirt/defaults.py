@@ -226,16 +226,15 @@ KSUSHYSERVICE = """[Unit]
 Description=Ksushy emulator service
 After=syslog.target
 [Service]
+Type=simple
+ExecStart=ksushy
+StandardOutput=syslog
+StandardError=syslog
 Environment=HOME={home}
 Environment=PYTHONUNBUFFERED=true
-{ipv6}
-{ssl}
-{user}
-{password}
-Type=simple
-ExecStart=/usr/bin/ksushy
-StandardOutput=syslog
-StandardError=syslog"""
+{port}{ipv6}{ssl}{user}{password}{bootonce}
+[Install]
+WantedBy=multi-user.target"""
 
 WEBSERVICE = """[Unit]
 Description=Kweb service
