@@ -2463,6 +2463,74 @@ class Kconfig(Kbaseconfig):
             overrides.get('tempkeydir').cleanup()
         return returndata
 
+    def download_image(self, pool=None, image=None, url=None, cmd=None, size=None, arch='x86_64',
+                       kvm_openstack=True, rhcos_commit=None, rhcos_installer=False, name=None):
+        k = self.k
+        if pool is None:
+            pool = self.pool
+            pprint(f"Using pool {pool}")
+        if image is not None:
+            if url is None:
+                if arch != 'x86_64':
+                    IMAGES.update({i: IMAGES[i].replace('x86_64', arch).replace('amd64', arch)
+                                   for i in IMAGES})
+                if image not in IMAGES:
+                    error(f"Image {image} has no associated url")
+                    return {'result': 'failure', 'reason': "Incorrect image"}
+                url = IMAGES[image]
+                image_type = self.type
+                if kvm_openstack and self.type == 'kvm':
+                    image_type = 'openstack'
+                if self.type == "proxmox":
+                    image_type = 'kvm'
+                if not kvm_openstack and self.type == 'kvm':
+                    image += "-qemu"
+                if 'rhcos' in image and not image.endswith('qcow2.gz'):
+                    if rhcos_commit is not None:
+                        url = common.get_commit_rhcos(rhcos_commit, _type=image_type)
+                    elif rhcos_installer:
+                        os.environ['PATH'] += f':{os.getcwd()}'
+                        url = common.get_installer_rhcos(_type=image_type, arch=arch)
+                    else:
+                        if arch != 'x86_64':
+                            url += f'-{arch}'
+                        url = common.get_latest_rhcos(url, _type=image_type, arch=arch)
+                if 'fcos' in image:
+                    url = common.get_latest_fcos(url, _type=image_type)
+                if image == 'fedoralatest':
+                    url = common.get_latest_fedora(arch)
+                image = os.path.basename(image)
+                if image.startswith('rhel'):
+                    if 'web' in sys.argv[0]:
+                        return {'result': 'failure', 'reason': "Missing url"}
+                    pprint(f"Opening url {url} for you to grab complete url for {image} kvm guest image")
+                    webbrowser.open(url, new=2, autoraise=True)
+                    url = input("Copy Url:\n")
+                    if url.strip() == '':
+                        error("Missing proper url.Leaving...")
+                        return {'result': 'failure', 'reason': "Missing image"}
+            if cmd is None and image != '' and image in IMAGESCOMMANDS:
+                cmd = IMAGESCOMMANDS[image]
+            pprint(f"Grabbing image {image} from url {url}")
+            need_iso = 'api/assisted-images/images' in url
+            shortname = os.path.basename(url).split('?')[0]
+            if need_iso and name is None:
+                image = f'boot-{shortname}.iso'
+            try:
+                convert = '.raw.' in url
+                result = k.add_image(url, pool, cmd=cmd, name=image, size=size, convert=convert)
+            except Exception as e:
+                error(f"Got {e}")
+                error(f"Please run kcli delete image --yes {shortname}")
+                return {'result': 'failure', 'reason': "User interruption"}
+            found = 'found' in result
+            if found:
+                return {'result': 'success'}
+            common.handle_response(result, image, element='Image', action='Added')
+            if result['result'] != 'success':
+                return {'result': 'failure', 'reason': result['reason']}
+        return {'result': 'success'}
+
     def handle_host(self, pool=None, image=None, switch=None, download=False,
                     url=None, cmd=None, sync=False, update_profile=False, size=None, arch='x86_64',
                     kvm_openstack=True, rhcos_commit=None, rhcos_installer=False):
