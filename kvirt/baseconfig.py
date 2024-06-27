@@ -1831,21 +1831,33 @@ class Kbaseconfig:
                 call(cmcmd, shell=True)
         return {'result': 'success'}
 
-    def deploy_ksushy_service(self, ssl=False, ipv6=False, user=None, password=None):
-        if os.path.exists("/usr/lib/systemd/system/ksushy.service"):
-            call("systemctl restart ksushy", shell=True)
-            return
-        home = os.environ.get('HOME', '/root')
+    def deploy_ksushy_service(self, port=9000, ssl=False, ipv6=False, user=None, password=None, bootonce=False):
         if ssl:
             warning("ssl support requires installing manually pyopenssl and cherrypy")
-        ssl = "Environment=KSUSHY_SSL=true" if ssl else ''
-        ipv6 = "Environment=KSUSHY_IPV6=true" if ipv6 else ''
-        user = f"Environment=KSUSHY_USER={user}" if user is not None else ''
-        password = f"Environment=KSUSHY_PASSWORD={password}" if password is not None else ''
-        sushydata = KSUSHYSERVICE.format(home=home, ipv6=ipv6, ssl=ssl, user=user, password=password)
-        with open("/usr/lib/systemd/system/ksushy.service", "w") as f:
+        root = os.getuid() == 0
+        if root:
+            service_file = "/usr/lib/systemd/system/ksushy.service"
+        else:
+            service_file = f"{os.environ.get('HOME')}/.config/systemd/user/ksushy.service"
+        if not os.path.exists(os.path.dirname(service_file)):
+            os.makedirs(os.path.dirname(service_file))
+        update = os.path.exists(service_file)
+        home = os.environ.get('HOME', '/root')
+        executable = which('ksushy')
+        port = f"Environment=KSUSHY_PORT={port}\n" if port != 9000 else ''
+        ssl = "Environment=KSUSHY_SSL=true\n" if ssl else ''
+        ipv6 = "Environment=KSUSHY_IPV6=true\n" if ipv6 else ''
+        user = f"Environment=KSUSHY_USER={user}\n" if user is not None else ''
+        password = f"Environment=KSUSHY_PASSWORD={password}\n" if password is not None else ''
+        bootonce = "Environment=KSUSHY_BOOTONCE=true\n" if bootonce else ''
+        sushydata = KSUSHYSERVICE.format(home=home, port=port, ipv6=ipv6, ssl=ssl, user=user,
+                                         password=password, bootonce=bootonce, executable=executable)
+        with open(service_file, "w") as f:
             f.write(sushydata)
-        call("systemctl enable --now ksushy", shell=True)
+        cmd = "systemctl restart ksushy" if update else "systemctl enable --now ksushy"
+        user_space = "--user" if not root else ""
+        cmd = f"systemctl {user_space} restart ksushy" if update else f"systemctl {user_space} enable --now ksushy"
+        call(cmd, shell=True)
 
     def deploy_web_service(self, ssl=False, ipv6=False):
         if os.path.exists("/usr/lib/systemd/system/kweb.service"):
