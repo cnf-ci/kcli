@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
 # coding=utf-8
 
 from kvirt.defaults import FAKECERT
 from kvirt.bottle import Bottle, request, response, jinja2_view, server_names, ServerAdapter, auth_basic
-from kvirt.common import pprint
+from kvirt.common import pprint, error
+from kvirt.baseconfig import Kbaseconfig
 from kvirt.config import Kconfig
 import os
 import subprocess
@@ -12,7 +12,7 @@ import functools
 from tempfile import NamedTemporaryFile
 
 
-basedir = f"{os.path.dirname(Bottle.run.__code__.co_filename)}/sushy"
+basedir = f"{os.path.dirname(Bottle.run.__code__.co_filename)}/ksushy"
 view = functools.partial(jinja2_view, template_lookup=[f"{basedir}/templates"])
 
 default_user = os.environ.get('KSUSHY_USER')
@@ -24,7 +24,7 @@ def credentials(user, password):
         return True
     elif user is None or password is None:
         return False
-    elif user == default_user or password == default_password:
+    elif user == default_user and password == default_password:
         return True
     else:
         return False
@@ -52,9 +52,21 @@ class Ksushy():
     def __init__(self):
         app = Bottle()
 
+        @app.hook('after_request')
+        def wsgilog():
+            if 'KSUSHY_SSL' not in os.environ:
+                return
+            ip = request.environ.get('REMOTE_ADDR')
+            time = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+            method = request.environ.get('REQUEST_METHOD')
+            uri = request.environ.get('REQUEST_URI')
+            protocol = request.environ.get('SERVER_PROTOCOL')
+            status = response.status_code
+            length = len(response.body)
+            print(f'{ip} - - [{time}] "{method} {uri} {protocol}" {status} {length}')
+
         @app.route('/redfish/v1')
         @app.route('/redfish/v1/')
-        @auth_basic(credentials)
         @view('root.json')
         def root_resource():
             return {}
@@ -69,48 +81,117 @@ class Ksushy():
         @auth_basic(credentials)
         @view('systems.json')
         def system_collection_resource():
-            config = Kconfig()
+            clients = []
+            baseconfig = Kbaseconfig()
+            for client in baseconfig.clients:
+                clients.append({"@odata.id": f"/redfish/v1/Systems/{client}"})
+            return {'vms': clients, 'count': len(clients)}
+
+        @app.route('/redfish/v1/Systems/<client>')
+        @auth_basic(credentials)
+        @view('systems.json')
+        def system_collection_client_resource(client):
+            baseconfig = Kbaseconfig()
+            if client not in baseconfig.clients:
+                response.status = 404
+                msg = f'Client {client} not found'
+                error(msg)
+                return msg
+            config = Kconfig(client)
             k = config.k
             vms = []
             for vm in k.list():
-                vms.append({"@odata.id": f"/redfish/v1/Systems/{config.client}/{vm['name']}"})
+                vms.append({"@odata.id": f"/redfish/v1/Systems/{client}/{vm['name']}"})
             return {'vms': vms, 'count': len(vms)}
 
         @app.route('/redfish/v1/Systems/<client>/<name>')
         @auth_basic(credentials)
         @view('system.json')
         def system_resource_get(client, name):
+            baseconfig = Kbaseconfig()
+            if client not in baseconfig.clients:
+                response.status = 404
+                msg = f'Client {client} not found'
+                error(msg)
+                return msg
             config = Kconfig(client)
             k = config.k
             info = k.info(name)
             if not info:
                 response.status = 404
-                return f'VM {name} not found'
+                msg = f'VM {name} not found'
+                error(msg)
+                return msg
             status = 'On' if info['status'] == 'up' else 'Off'
             data = {'client': client, 'name': name, 'status': status, 'memory': info['memory'], 'cpus': info['cpus'],
                     'virt_type': config.type}
+            if 'id' in info:
+                data['uuid'] = info['id']
             return data
 
         @app.route('/redfish/v1/Systems/<client>/<name>', method='PATCH')
         @auth_basic(credentials)
         def system_resource(client, name):
-            pprint('ignoring patch request')
+            if not self.bootonce:
+                return
             boot = request.json.get('Boot', {})
             if not boot:
                 response.status = 400
-                return 'PATCH only works for Boot'
-            return
+                msg = 'PATCH only works for Boot'
+                error(msg)
+                return msg
+            target = boot.get('BootSourceOverrideTarget')
+            mode = boot.get('BootSourceOverrideMode')
+            if not target and not mode:
+                response.status = 400
+                msg = 'Missing the BootSourceOverrideTarget and/or BootSourceOverrideMode element'
+                error(msg)
+                return msg
+            else:
+                baseconfig = Kbaseconfig()
+                if client not in baseconfig.clients:
+                    response.status = 404
+                    msg = f'Client {client} not found'
+                    error(msg)
+                    return msg
+                config = Kconfig(client)
+                k = config.k
+                info = k.info(name)
+                pprint('Forcing to boot from ISO by deleting primary disk')
+                try:
+                    pool = config.pool
+                    diskname = f"{name}_0.img"
+                    size = info['disks'][0]['size']
+                    interface = info['disks'][0]['format']
+                    k.stop(name)
+                    k.delete_disk(name=name, diskname=diskname, pool=pool)
+                    k.add_disk(name=name, size=size, pool=pool, interface=interface, diskname=diskname)
+                except Exception as e:
+                    msg = f'Failed to set boot from virtualcd once. Hit {e}'
+                    error(msg)
+                    response.status = 400
+                    return msg
+                response.status = 204
+                return ''
 
         @app.route('/redfish/v1/Systems/<client>/<name>/EthernetInterfaces')
         @auth_basic(credentials)
         @view('interfaces.json')
         def manage_interfaces(client, name):
+            baseconfig = Kbaseconfig()
+            if client not in baseconfig.clients:
+                response.status = 404
+                msg = f'Client {client} not found'
+                error(msg)
+                return msg
             config = Kconfig(client)
             k = config.k
             info = k.info(name)
             if not info:
                 response.status = 404
-                return f'VM {name} not found'
+                msg = f'VM {name} not found'
+                error(msg)
+                return msg
             macs = []
             for nic in info.get('nets', []):
                 mac = nic['mac']
@@ -132,6 +213,12 @@ class Ksushy():
         @app.route('/redfish/v1/Systems/<client>/<name>/Actions/ComputerSystem.Reset', method='POST')
         @auth_basic(credentials)
         def system_reset_action(client, name):
+            baseconfig = Kbaseconfig()
+            if client not in baseconfig.clients:
+                response.status = 404
+                msg = f'Client {client} not found'
+                error(msg)
+                return msg
             config = Kconfig(client)
             k = config.k
             reset_type = request.json.get('ResetType', 'On')
@@ -139,14 +226,16 @@ class Ksushy():
                 try:
                     pprint(f"Starting vm {name}")
                     k.start(name)
-                except subprocess.CalledProcessError:
+                except subprocess.CalledProcessError as e:
+                    error(e)
                     response.status = 400
                     return 'Failed to poweron the server'
             else:
                 try:
                     pprint(f"Stopping vm {name}")
                     k.stop(name)
-                except subprocess.CalledProcessError:
+                except subprocess.CalledProcessError as e:
+                    error(e)
                     response.status = 400
                     return 'Failed to poweroff the server'
             response.status = 204
@@ -162,11 +251,19 @@ class Ksushy():
         @auth_basic(credentials)
         @view('virtualmedia_cd.json')
         def virtualmedia_cd_resource(client, name):
+            baseconfig = Kbaseconfig()
+            if client not in baseconfig.clients:
+                response.status = 404
+                msg = f'Client {client} not found'
+                error(msg)
+                return msg
             config = Kconfig(client)
             info = config.k.info(name)
             if not info:
                 response.status = 404
-                return f'VM {name} not found'
+                msg = f'VM {name} not found'
+                error(msg)
+                return msg
             inserted, image_url = False, ''
             if 'iso' in info:
                 inserted = True
@@ -177,27 +274,45 @@ class Ksushy():
                    method='POST')
         @auth_basic(credentials)
         def virtualmedia_insert(client, name):
+            baseconfig = Kbaseconfig()
+            if client not in baseconfig.clients:
+                response.status = 404
+                msg = f'Client {client} not found'
+                error(msg)
+                return msg
             config = Kconfig(client)
             if not config.k.exists(name):
                 response.status = 404
-                return f'VM {name} not found'
+                msg = f'VM {name} not found'
+                error(msg)
+                return msg
             image = request.json.get('Image')
             if image is None:
                 response.status = 400
-                return 'POST only works for Image'
+                msg = 'POST only works for Image'
+                error(msg)
+                return msg
             try:
                 pprint(f"Setting iso of vm {name} to {image}")
-                iso = os.path.basename(image)
-                token_iso = os.path.basename(image).split('?')[0]
-                if token_iso != iso:
-                    iso = f"boot-{token_iso}.iso"
+                info = config.k.info(name)
+                if 'redfish_iso' in info:
+                    iso = info['redfish_iso']
+                else:
+                    iso = os.path.basename(image)
+                    token_iso = os.path.basename(image).split('?')[0]
+                    if token_iso != iso:
+                        iso = f"boot-{token_iso}.iso"
                 isos = [os.path.basename(i) for i in config.k.volumes(iso=True)]
                 if iso not in isos:
-                    config.handle_host(pool=config.pool, image=iso, download=True, url=image, update_profile=False)
+                    result = config.download_image(pool=config.pool, image=iso, url=image)
+                    if result['result'] != 'success':
+                        raise Exception(result['reason'])
                 config.update_vm(name, {'iso': iso})
-            except subprocess.CalledProcessError:
-                response.status = 400
-                return 'Failed to mount virtualcd'
+            except Exception as e:
+                msg = f'Failed to mount virtualcd. Hit {e}'
+                error(msg)
+                response.status = 500
+                return msg
             response.status = 204
             return ''
 
@@ -205,16 +320,25 @@ class Ksushy():
                    method='POST')
         @auth_basic(credentials)
         def virtualmedia_eject(client, name):
+            baseconfig = Kbaseconfig()
+            if client not in baseconfig.clients:
+                response.status = 404
+                msg = f'Client {client} not found'
+                error(msg)
+                return msg
             config = Kconfig(client)
             if not config.k.exists(name):
                 response.status = 404
-                return f'VM {name} not found'
+                msg = f'VM {name} not found'
+                error(msg)
+                return msg
             try:
                 pprint(f"Setting iso of vm {name} to None")
                 info = config.k.info(name)
                 if 'iso' in info:
                     config.update_vm(name, {'iso': None})
-            except subprocess.CalledProcessError:
+            except subprocess.CalledProcessError as e:
+                error(e)
                 return ('Failed to unmount virtualcd', 400)
             response.status = 204
             return ''
@@ -230,6 +354,7 @@ class Ksushy():
         self.debug = 'KSUSHY_DEBUG' in os.environ
         self.ipv6 = 'KSUSHY_IPV6' in os.environ
         self.host = '::' if self.ipv6 else '0.0.0.0'
+        self.bootonce = 'KSUSHY_BOOTONCE' in os.environ
 
     def run(self):
         data = {'host': self.host, 'port': self.port, 'debug': self.debug}
